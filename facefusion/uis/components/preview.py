@@ -7,7 +7,6 @@ from facefusion import wording
 from facefusion.vision import get_video_frame, count_video_frame_total, normalize_frame_color, resize_frame_dimension
 from facefusion.face_analyser import get_one_face
 from facefusion.face_reference import get_face_reference, set_face_reference
-from facefusion.predictor import predict_frame
 from facefusion.processors.frame.core import load_frame_processor_module
 from facefusion.typing import Frame
 from facefusion.uis import core as ui
@@ -117,8 +116,6 @@ def update_preview_frame_slider(frame_number : int = 0) -> Update:
 
 
 def process_preview_frame(temp_frame : Frame) -> Frame:
-	if predict_frame(temp_frame):
-		return cv2.GaussianBlur(temp_frame, (99, 99), 0)
 	source_face = get_one_face(cv2.imread(facefusion.globals.source_path)) if facefusion.globals.source_path else None
 	reference_face = get_face_reference() if 'reference' in facefusion.globals.face_recognition else None
 	temp_frame = resize_frame_dimension(temp_frame, 480)
