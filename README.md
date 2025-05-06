@@ -1,3 +1,29 @@
+Особенности сборки: 
+
+- Возможность переключения с CUDA режима (по умолчанию) на режим DirectML для работы на видеокартах AMD и Intel (и старых Nvidia).
+- Возможность выбора языка интерфейса - русский или английский
+Также что нового:
+- Обновлены библиотеки до актуальных версий, незначительное ускорение работы.
+- Все обновления, вошедшие в версию 3.2.0, например новая модель xseg для маски лица.
+Для смены CUDA режима на режим для остальных карт, запустите change_backend.bat и следуйте инструкции.
+
+Скачать:
+
+С моего сервера (https://disk.yandex.ru/d/2G8XMILgzEpMIg)
+С Яндекс Диска (https://disk.yandex.ru/d/2G8XMILgzEpMIg)
+Universal FaceFusion build:
+- Ability to switch from CUDA mode (default) to DirectML mode to work on AMD and Intel (and older Nvidia) graphics cards.
+- Ability to select interface language - Russian or English
+Also what's new:
+- Updated libraries to current versions, minor speedup.
+- All updates included in version 3.2.0, e.g. new xseg model for face mask.
+To change CUDA mode to the mode for the rest of the maps, run change_backend.bat and follow the instructions.
+
+Download:
+
+From my server (https://disk.yandex.ru/d/2G8XMILgzEpMIg)
+From Yandex Disk (https://disk.yandex.ru/d/2G8XMILgzEpMIg) 
+
 FaceFusion
 ==========
 
