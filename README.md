@@ -24,6 +24,10 @@ Download:
 From my server (https://disk.yandex.ru/d/2G8XMILgzEpMIg)
 From Yandex Disk (https://disk.yandex.ru/d/2G8XMILgzEpMIg) 
 
+NOTICE:
+
+ «FaceFusion распространяется под той же лицензией; Neurogen не претендует на авторство кода FaceFusion».
+
 FaceFusion
 ==========
 
