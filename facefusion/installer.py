@@ -1,53 +1,90 @@
-from typing import Dict, Tuple
 import os
-import sys
+import shutil
+import signal
 import subprocess
-import tempfile
+import sys
+from argparse import ArgumentParser, HelpFormatter
 
-subprocess.call([ 'pip', 'install' , 'inquirer', '-q' ])
+from facefusion import metadata, wording
+from facefusion.common_helper import is_linux, is_windows
 
-import inquirer
-
-from facefusion import wording
-
-ONNXRUNTIMES : Dict[str, Tuple[str, str]] =\
+ONNXRUNTIME_SET =\
 {
-	'cpu': ('onnxruntime', '1.15.1'),
-	'cuda': ('onnxruntime-gpu', '1.15.1'),
-	'coreml-legacy': ('onnxruntime-coreml', '1.13.1'),
-	'coreml-silicon': ('onnxruntime-silicon', '1.14.2'),
-	'directml': ('onnxruntime-directml', '1.15.1'),
-	'openvino': ('onnxruntime-openvino', '1.15.0')
+	'default': ('onnxruntime', '1.21.1')
 }
+if is_windows() or is_linux():
+	ONNXRUNTIME_SET['cuda'] = ('onnxruntime-gpu', '1.21.1')
+	ONNXRUNTIME_SET['openvino'] = ('onnxruntime-openvino', '1.21.0')
+if is_windows():
+	ONNXRUNTIME_SET['directml'] = ('onnxruntime-directml', '1.17.3')
+if is_linux():
+	ONNXRUNTIME_SET['rocm'] = ('onnxruntime-rocm', '1.21.0')
 
 
-def run() -> None:
-	answers : Dict[str, str] = inquirer.prompt(
-	[
-		inquirer.List(
-			'onnxruntime_key',
-			message = wording.get('select_onnxruntime_install'),
-			choices = list(ONNXRUNTIMES.keys())
-		)
-	])
+def cli() -> None:
+	signal.signal(signal.SIGINT, lambda signal_number, frame: sys.exit(0))
+	program = ArgumentParser(formatter_class = lambda prog: HelpFormatter(prog, max_help_position = 50))
+	program.add_argument('--onnxruntime', help = wording.get('help.install_dependency').format(dependency = 'onnxruntime'), choices = ONNXRUNTIME_SET.keys(), required = True)
+	program.add_argument('--skip-conda', help = wording.get('help.skip_conda'), action = 'store_true')
+	program.add_argument('-v', '--version', version = metadata.get('name') + ' ' + metadata.get('version'), action = 'version')
+	run(program)
 
-	if answers is not None:
-		onnxruntime_key = answers['onnxruntime_key']
-		onnxruntime_name, onnxruntime_version = ONNXRUNTIMES[onnxruntime_key]
+
+def run(program : ArgumentParser) -> None:
+	args = program.parse_args()
+	has_conda = 'CONDA_PREFIX' in os.environ
+	onnxruntime_name, onnxruntime_version = ONNXRUNTIME_SET.get(args.onnxruntime)
+
+	if not args.skip_conda and not has_conda:
+		sys.stdout.write(wording.get('conda_not_activated') + os.linesep)
+		sys.exit(1)
+
+	with open('requirements.txt') as file:
+
+		for line in file.readlines():
+			__line__ = line.strip()
+			if not __line__.startswith('onnxruntime'):
+				subprocess.call([ shutil.which('pip'), 'install', line, '--force-reinstall' ])
+
+	if args.onnxruntime == 'rocm':
 		python_id = 'cp' + str(sys.version_info.major) + str(sys.version_info.minor)
-		subprocess.call([ 'pip', 'uninstall', 'torch', '-y' ])
-		if onnxruntime_key == 'cuda':
-			subprocess.call([ 'pip', 'install', '-r', 'requirements.txt', '--extra-index-url', 'https://download.pytorch.org/whl/cu118' ])
-		else:
-			subprocess.call([ 'pip', 'install', '-r', 'requirements.txt' ])
-		if onnxruntime_key != 'cpu':
-			subprocess.call([ 'pip', 'uninstall', 'onnxruntime', onnxruntime_name, '-y' ])
-		if onnxruntime_key != 'coreml-silicon':
-			subprocess.call([ 'pip', 'install', onnxruntime_name + '==' + onnxruntime_version ])
-		elif python_id in [ 'cp39', 'cp310', 'cp311' ]:
-			wheel_name = '-'.join([ 'onnxruntime_silicon', onnxruntime_version, python_id, python_id, 'macosx_12_0_arm64.whl' ])
-			wheel_path = os.path.join(tempfile.gettempdir(), wheel_name)
-			wheel_url = 'https://github.com/cansik/onnxruntime-silicon/releases/download/v' + onnxruntime_version + '/' + wheel_name
-			subprocess.call([ 'curl', wheel_url, '-o', wheel_path, '-L' ])
-			subprocess.call([ 'pip', 'install', wheel_path ])
-			os.remove(wheel_path)
+
+		if python_id in [ 'cp310', 'cp312' ]:
+			wheel_name = 'onnxruntime_rocm-' + onnxruntime_version + '-' + python_id + '-' + python_id + '-linux_x86_64.whl'
+			wheel_url = 'https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/' + wheel_name
+			subprocess.call([ shutil.which('pip'), 'install', wheel_url, '--force-reinstall' ])
+	else:
+		subprocess.call([ shutil.which('pip'), 'install', onnxruntime_name + '==' + onnxruntime_version, '--force-reinstall' ])
+
+	if args.onnxruntime == 'cuda' and has_conda:
+		library_paths = []
+
+		if is_linux():
+			if os.getenv('LD_LIBRARY_PATH'):
+				library_paths = os.getenv('LD_LIBRARY_PATH').split(os.pathsep)
+
+			python_id = 'python' + str(sys.version_info.major) + '.' + str(sys.version_info.minor)
+			library_paths.extend(
+			[
+				os.path.join(os.getenv('CONDA_PREFIX'), 'lib'),
+				os.path.join(os.getenv('CONDA_PREFIX'), 'lib', python_id, 'site-packages', 'tensorrt_libs')
+			])
+			library_paths = list(dict.fromkeys([ library_path for library_path in library_paths if os.path.exists(library_path) ]))
+
+			subprocess.call([ shutil.which('conda'), 'env', 'config', 'vars', 'set', 'LD_LIBRARY_PATH=' + os.pathsep.join(library_paths) ])
+
+		if is_windows():
+			if os.getenv('PATH'):
+				library_paths = os.getenv('PATH').split(os.pathsep)
+
+			library_paths.extend(
+			[
+				os.path.join(os.getenv('CONDA_PREFIX'), 'Lib'),
+				os.path.join(os.getenv('CONDA_PREFIX'), 'Lib', 'site-packages', 'tensorrt_libs')
+			])
+			library_paths = list(dict.fromkeys([ library_path for library_path in library_paths if os.path.exists(library_path) ]))
+
+			subprocess.call([ shutil.which('conda'), 'env', 'config', 'vars', 'set', 'PATH=' + os.pathsep.join(library_paths) ])
+
+	if args.onnxruntime == 'directml':
+		subprocess.call([ shutil.which('pip'), 'install', 'numpy==1.26.4', '--force-reinstall' ])

@@ -1,106 +1,124 @@
-import threading
-from typing import Any, Optional, List
-import insightface
+from typing import List, Optional
+
 import numpy
 
-import facefusion.globals
-from facefusion.typing import Frame, Face, FaceAnalyserDirection, FaceAnalyserAge, FaceAnalyserGender
-
-FACE_ANALYSER = None
-THREAD_LOCK = threading.Lock()
-
-
-def get_face_analyser() -> Any:
-	global FACE_ANALYSER
-
-	with THREAD_LOCK:
-		if FACE_ANALYSER is None:
-			FACE_ANALYSER = insightface.app.FaceAnalysis(name = 'buffalo_l', providers = facefusion.globals.execution_providers)
-			FACE_ANALYSER.prepare(ctx_id = 0)
-	return FACE_ANALYSER
+from facefusion import state_manager
+from facefusion.common_helper import get_first
+from facefusion.face_classifier import classify_face
+from facefusion.face_detector import detect_faces, detect_rotated_faces
+from facefusion.face_helper import apply_nms, convert_to_face_landmark_5, estimate_face_angle, get_nms_threshold
+from facefusion.face_landmarker import detect_face_landmark, estimate_face_landmark_68_5
+from facefusion.face_recognizer import calc_embedding
+from facefusion.face_store import get_static_faces, set_static_faces
+from facefusion.types import BoundingBox, Face, FaceLandmark5, FaceLandmarkSet, FaceScoreSet, Score, VisionFrame
 
 
-def clear_face_analyser() -> Any:
-	global FACE_ANALYSER
+def create_faces(vision_frame : VisionFrame, bounding_boxes : List[BoundingBox], face_scores : List[Score], face_landmarks_5 : List[FaceLandmark5]) -> List[Face]:
+	faces = []
+	nms_threshold = get_nms_threshold(state_manager.get_item('face_detector_model'), state_manager.get_item('face_detector_angles'))
+	keep_indices = apply_nms(bounding_boxes, face_scores, state_manager.get_item('face_detector_score'), nms_threshold)
 
-	FACE_ANALYSER = None
+	for index in keep_indices:
+		bounding_box = bounding_boxes[index]
+		face_score = face_scores[index]
+		face_landmark_5 = face_landmarks_5[index]
+		face_landmark_5_68 = face_landmark_5
+		face_landmark_68_5 = estimate_face_landmark_68_5(face_landmark_5_68)
+		face_landmark_68 = face_landmark_68_5
+		face_landmark_score_68 = 0.0
+		face_angle = estimate_face_angle(face_landmark_68_5)
 
+		if state_manager.get_item('face_landmarker_score') > 0:
+			face_landmark_68, face_landmark_score_68 = detect_face_landmark(vision_frame, bounding_box, face_angle)
+		if face_landmark_score_68 > state_manager.get_item('face_landmarker_score'):
+			face_landmark_5_68 = convert_to_face_landmark_5(face_landmark_68)
 
-def get_one_face(frame : Frame, position : int = 0) -> Optional[Face]:
-	many_faces = get_many_faces(frame)
-	if many_faces:
-		try:
-			return many_faces[position]
-		except IndexError:
-			return many_faces[-1]
-	return None
-
-
-def get_many_faces(frame : Frame) -> List[Face]:
-	try:
-		faces = get_face_analyser().get(frame)
-		if facefusion.globals.face_analyser_direction:
-			faces = sort_by_direction(faces, facefusion.globals.face_analyser_direction)
-		if facefusion.globals.face_analyser_age:
-			faces = filter_by_age(faces, facefusion.globals.face_analyser_age)
-		if facefusion.globals.face_analyser_gender:
-			faces = filter_by_gender(faces, facefusion.globals.face_analyser_gender)
-		return faces
-	except (AttributeError, ValueError):
-		return []
-
-
-def find_similar_faces(frame : Frame, reference_face : Face, face_distance : float) -> List[Face]:
-	many_faces = get_many_faces(frame)
-	similar_faces = []
-	if many_faces:
-		for face in many_faces:
-			if hasattr(face, 'normed_embedding') and hasattr(reference_face, 'normed_embedding'):
-				current_face_distance = numpy.sum(numpy.square(face.normed_embedding - reference_face.normed_embedding))
-				if current_face_distance < face_distance:
-					similar_faces.append(face)
-	return similar_faces
-
-
-def sort_by_direction(faces : List[Face], direction : FaceAnalyserDirection) -> List[Face]:
-	if direction == 'left-right':
-		return sorted(faces, key = lambda face: face['bbox'][0])
-	if direction == 'right-left':
-		return sorted(faces, key = lambda face: face['bbox'][0], reverse = True)
-	if direction == 'top-bottom':
-		return sorted(faces, key = lambda face: face['bbox'][1])
-	if direction == 'bottom-top':
-		return sorted(faces, key = lambda face: face['bbox'][1], reverse = True)
-	if direction == 'small-large':
-		return sorted(faces, key = lambda face: (face['bbox'][2] - face['bbox'][0]) * (face['bbox'][3] - face['bbox'][1]))
-	if direction == 'large-small':
-		return sorted(faces, key = lambda face: (face['bbox'][2] - face['bbox'][0]) * (face['bbox'][3] - face['bbox'][1]), reverse = True)
+		face_landmark_set : FaceLandmarkSet =\
+		{
+			'5': face_landmark_5,
+			'5/68': face_landmark_5_68,
+			'68': face_landmark_68,
+			'68/5': face_landmark_68_5
+		}
+		face_score_set : FaceScoreSet =\
+		{
+			'detector': face_score,
+			'landmarker': face_landmark_score_68
+		}
+		embedding, normed_embedding = calc_embedding(vision_frame, face_landmark_set.get('5/68'))
+		gender, age, race = classify_face(vision_frame, face_landmark_set.get('5/68'))
+		faces.append(Face(
+			bounding_box = bounding_box,
+			score_set = face_score_set,
+			landmark_set = face_landmark_set,
+			angle = face_angle,
+			embedding = embedding,
+			normed_embedding = normed_embedding,
+			gender = gender,
+			age = age,
+			race = race
+		))
 	return faces
 
 
-def filter_by_age(faces : List[Face], age : FaceAnalyserAge) -> List[Face]:
-	filter_faces = []
-	for face in faces:
-		if face['age'] < 13 and age == 'child':
-			filter_faces.append(face)
-		elif face['age'] < 19 and age == 'teen':
-			filter_faces.append(face)
-		elif face['age'] < 60 and age == 'adult':
-			filter_faces.append(face)
-		elif face['age'] > 59 and age == 'senior':
-			filter_faces.append(face)
-	return filter_faces
+def get_one_face(faces : List[Face], position : int = 0) -> Optional[Face]:
+	if faces:
+		position = min(position, len(faces) - 1)
+		return faces[position]
+	return None
 
 
-def filter_by_gender(faces : List[Face], gender : FaceAnalyserGender) -> List[Face]:
-	filter_faces = []
-	for face in faces:
-		if face['gender'] == 1 and gender == 'male':
-			filter_faces.append(face)
-		if face['gender'] == 0 and gender == 'female':
-			filter_faces.append(face)
-	return filter_faces
+def get_average_face(faces : List[Face]) -> Optional[Face]:
+	embeddings = []
+	normed_embeddings = []
+
+	if faces:
+		first_face = get_first(faces)
+
+		for face in faces:
+			embeddings.append(face.embedding)
+			normed_embeddings.append(face.normed_embedding)
+
+		return Face(
+			bounding_box = first_face.bounding_box,
+			score_set = first_face.score_set,
+			landmark_set = first_face.landmark_set,
+			angle = first_face.angle,
+			embedding = numpy.mean(embeddings, axis = 0),
+			normed_embedding = numpy.mean(normed_embeddings, axis = 0),
+			gender = first_face.gender,
+			age = first_face.age,
+			race = first_face.race
+		)
+	return None
 
 
-def get_faces_total(frame : Frame) -> int:
-	return len(get_many_faces(frame))
+def get_many_faces(vision_frames : List[VisionFrame]) -> List[Face]:
+	many_faces : List[Face] = []
+
+	for vision_frame in vision_frames:
+		if numpy.any(vision_frame):
+			static_faces = get_static_faces(vision_frame)
+			if static_faces:
+				many_faces.extend(static_faces)
+			else:
+				all_bounding_boxes = []
+				all_face_scores = []
+				all_face_landmarks_5 = []
+
+				for face_detector_angle in state_manager.get_item('face_detector_angles'):
+					if face_detector_angle == 0:
+						bounding_boxes, face_scores, face_landmarks_5 = detect_faces(vision_frame)
+					else:
+						bounding_boxes, face_scores, face_landmarks_5 = detect_rotated_faces(vision_frame, face_detector_angle)
+					all_bounding_boxes.extend(bounding_boxes)
+					all_face_scores.extend(face_scores)
+					all_face_landmarks_5.extend(face_landmarks_5)
+
+				if all_bounding_boxes and all_face_scores and all_face_landmarks_5 and state_manager.get_item('face_detector_score') > 0:
+					faces = create_faces(vision_frame, all_bounding_boxes, all_face_scores, all_face_landmarks_5)
+
+					if faces:
+						many_faces.extend(faces)
+						set_static_faces(vision_frame, faces)
+	return many_faces

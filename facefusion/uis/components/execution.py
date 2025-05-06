@@ -1,64 +1,47 @@
 from typing import List, Optional
-import gradio
-import onnxruntime
 
-import facefusion.globals
-from facefusion import wording
-from facefusion.face_analyser import clear_face_analyser
-from facefusion.processors.frame.core import clear_frame_processors_modules
-from facefusion.uis.typing import Update
-from facefusion.utilities import encode_execution_providers, decode_execution_providers
+import gradio
+
+from facefusion import face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, state_manager, voice_extractor, wording
+from facefusion.execution import get_available_execution_providers
+from facefusion.filesystem import get_file_name, resolve_file_paths
+from facefusion.processors.core import get_processors_modules
+from facefusion.types import ExecutionProvider
 
 EXECUTION_PROVIDERS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
-EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
-EXECUTION_QUEUE_COUNT_SLIDER : Optional[gradio.Slider] = None
 
 
 def render() -> None:
 	global EXECUTION_PROVIDERS_CHECKBOX_GROUP
-	global EXECUTION_THREAD_COUNT_SLIDER
-	global EXECUTION_QUEUE_COUNT_SLIDER
 
-	with gradio.Box():
-		EXECUTION_PROVIDERS_CHECKBOX_GROUP = gradio.CheckboxGroup(
-			label = wording.get('execution_providers_checkbox_group_label'),
-			choices = encode_execution_providers(onnxruntime.get_available_providers()),
-			value = encode_execution_providers(facefusion.globals.execution_providers)
-		)
-		EXECUTION_THREAD_COUNT_SLIDER = gradio.Slider(
-			label = wording.get('execution_thread_count_slider_label'),
-			value = facefusion.globals.execution_thread_count,
-			step = 1,
-			minimum = 1,
-			maximum = 128
-		)
-		EXECUTION_QUEUE_COUNT_SLIDER = gradio.Slider(
-			label = wording.get('execution_queue_count_slider_label'),
-			value = facefusion.globals.execution_queue_count,
-			step = 1,
-			minimum = 1,
-			maximum = 16
-		)
+	EXECUTION_PROVIDERS_CHECKBOX_GROUP = gradio.CheckboxGroup(
+		label = wording.get('uis.execution_providers_checkbox_group'),
+		choices = get_available_execution_providers(),
+		value = state_manager.get_item('execution_providers')
+	)
 
 
 def listen() -> None:
 	EXECUTION_PROVIDERS_CHECKBOX_GROUP.change(update_execution_providers, inputs = EXECUTION_PROVIDERS_CHECKBOX_GROUP, outputs = EXECUTION_PROVIDERS_CHECKBOX_GROUP)
-	EXECUTION_THREAD_COUNT_SLIDER.change(update_execution_thread_count, inputs = EXECUTION_THREAD_COUNT_SLIDER, outputs = EXECUTION_THREAD_COUNT_SLIDER)
-	EXECUTION_QUEUE_COUNT_SLIDER.change(update_execution_queue_count, inputs = EXECUTION_QUEUE_COUNT_SLIDER, outputs = EXECUTION_QUEUE_COUNT_SLIDER)
 
 
-def update_execution_providers(execution_providers : List[str]) -> Update:
-	clear_face_analyser()
-	clear_frame_processors_modules()
-	facefusion.globals.execution_providers = decode_execution_providers(execution_providers)
-	return gradio.update(value = execution_providers)
+def update_execution_providers(execution_providers : List[ExecutionProvider]) -> gradio.CheckboxGroup:
+	common_modules =\
+	[
+		face_classifier,
+		face_detector,
+		face_landmarker,
+		face_masker,
+		face_recognizer,
+		voice_extractor
+	]
+	available_processors = [ get_file_name(file_path) for file_path in resolve_file_paths('facefusion/processors/modules') ]
+	processor_modules = get_processors_modules(available_processors)
 
+	for module in common_modules + processor_modules:
+		if hasattr(module, 'clear_inference_pool'):
+			module.clear_inference_pool()
 
-def update_execution_thread_count(execution_thread_count : int = 1) -> Update:
-	facefusion.globals.execution_thread_count = execution_thread_count
-	return gradio.update(value = execution_thread_count)
-
-
-def update_execution_queue_count(execution_queue_count : int = 1) -> Update:
-	facefusion.globals.execution_queue_count = execution_queue_count
-	return gradio.update(value = execution_queue_count)
+	execution_providers = execution_providers or get_available_execution_providers()
+	state_manager.set_item('execution_providers', execution_providers)
+	return gradio.CheckboxGroup(value = state_manager.get_item('execution_providers'))

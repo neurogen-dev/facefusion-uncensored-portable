@@ -1,41 +1,43 @@
 from typing import List, Optional
+
 import gradio
 
-import facefusion.globals
-from facefusion import wording
-from facefusion.processors.frame.core import load_frame_processor_module, clear_frame_processors_modules
-from facefusion.uis import core as ui
-from facefusion.uis.typing import Update
-from facefusion.utilities import list_module_names
+from facefusion import state_manager, wording
+from facefusion.filesystem import get_file_name, resolve_file_paths
+from facefusion.processors.core import get_processors_modules
+from facefusion.uis.core import register_ui_component
 
-FRAME_PROCESSORS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
+PROCESSORS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
 
 
 def render() -> None:
-	global FRAME_PROCESSORS_CHECKBOX_GROUP
+	global PROCESSORS_CHECKBOX_GROUP
 
-	with gradio.Box():
-		FRAME_PROCESSORS_CHECKBOX_GROUP = gradio.CheckboxGroup(
-			label = wording.get('frame_processors_checkbox_group_label'),
-			choices = sort_frame_processors(facefusion.globals.frame_processors),
-			value = facefusion.globals.frame_processors
-		)
-		ui.register_component('frame_processors_checkbox_group', FRAME_PROCESSORS_CHECKBOX_GROUP)
+	PROCESSORS_CHECKBOX_GROUP = gradio.CheckboxGroup(
+		label = wording.get('uis.processors_checkbox_group'),
+		choices = sort_processors(state_manager.get_item('processors')),
+		value = state_manager.get_item('processors')
+	)
+	register_ui_component('processors_checkbox_group', PROCESSORS_CHECKBOX_GROUP)
 
 
 def listen() -> None:
-	FRAME_PROCESSORS_CHECKBOX_GROUP.change(update_frame_processors, inputs = FRAME_PROCESSORS_CHECKBOX_GROUP, outputs = FRAME_PROCESSORS_CHECKBOX_GROUP)
+	PROCESSORS_CHECKBOX_GROUP.change(update_processors, inputs = PROCESSORS_CHECKBOX_GROUP, outputs = PROCESSORS_CHECKBOX_GROUP)
 
 
-def update_frame_processors(frame_processors : List[str]) -> Update:
-	clear_frame_processors_modules()
-	facefusion.globals.frame_processors = frame_processors
-	for frame_processor in facefusion.globals.frame_processors:
-		frame_processor_module = load_frame_processor_module(frame_processor)
-		frame_processor_module.pre_check()
-	return gradio.update(value = frame_processors, choices = sort_frame_processors(frame_processors))
+def update_processors(processors : List[str]) -> gradio.CheckboxGroup:
+	for processor_module in get_processors_modules(state_manager.get_item('processors')):
+		if hasattr(processor_module, 'clear_inference_pool'):
+			processor_module.clear_inference_pool()
+
+	for processor_module in get_processors_modules(processors):
+		if not processor_module.pre_check():
+			return gradio.CheckboxGroup()
+
+	state_manager.set_item('processors', processors)
+	return gradio.CheckboxGroup(value = state_manager.get_item('processors'), choices = sort_processors(state_manager.get_item('processors')))
 
 
-def sort_frame_processors(frame_processors : List[str]) -> list[str]:
-	frame_processors_names = list_module_names('facefusion/processors/frame/modules')
-	return sorted(frame_processors_names, key = lambda frame_processor : frame_processors.index(frame_processor) if frame_processor in frame_processors else len(frame_processors))
+def sort_processors(processors : List[str]) -> List[str]:
+	available_processors = [ get_file_name(file_path) for file_path in resolve_file_paths('facefusion/processors/modules') ]
+	return sorted(available_processors, key = lambda processor : processors.index(processor) if processor in processors else len(processors))
